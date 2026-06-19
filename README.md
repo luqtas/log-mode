@@ -4,7 +4,7 @@ cheap copy of Logseq with some extra goods
 # how
 i have no idea, ask Claude
 
-set the directory folder on `M-x cus-g` (customize-group's shortcut) `log-mode` and other stuff to your taste and by entering the mode (with `M-x log`), you'll be asked to chose a tag to filter. tags are set from phrases/words between square brackets and separated by comma, e.g. [personal, todo, cooking], that's 3 tags... each paragraph is treated as block you can read, un-read and sort by date!
+set the directory folder on `M-x cus-g` (customize-group's shortcut) `log-mode` and other stuff to your taste and by entering the mode (with `M-x log`), you'll be asked to chose a tag to filter. tags are set from phrases/words between square brackets and separated by comma, e.g. [personal, todo, cooking], that's 3 tags... each paragraph is treated as a block you can read, un-read and sort by date!
 
 this is a block about [emacs]
 
@@ -13,9 +13,13 @@ and this is another block about [cooking] <br>
 
 you can create block by pressing "l" in the log screen, after typing and saving, you can return to the log screen and your blocks will be there! you can filter by AND by pressing "f" and typing stuff (RET auto-completes, pressing RET on a blank/filled tag does the search... commas will set new tags to be included), an OR search is done by "F" (SHIFT + f). adding new tags to the current search is about pressing M-f
 
-you can set a custom folder for your machine, so you can sync stuff without worrying about conflicts in software like Syncthing! and read states will also be shared among devices, free of conflict based when the read/un-read state was marked! status are updated by pressing "g" or when access the buffer once again
+by pressing "t" you can join multiple tags to be filtered (always) as one, e.g. [project] and [projects] unified at the "t" buffer like this: project, projects (each new line is a new definition of aliases), every time you filter "projects", tags with "project" also will be included! useful if you like to keep the typing clean by abiding to plural or whatever grammatik rules
+
+you can set a custom folder for your machine, so you can sync stuff without worrying about conflicts in software like Syncthing! logs, aliases and read states will also be shared among devices, free of conflict. read/un-read state will have the date you toggled them and the last set is what'll define for all devices! these can be updated by pressing "g" or when access the buffer once again
 
 the logic for creating files when you press "l" or "e" (edits the current focused block (you can navigate on them by TAB or SHIFT-TAB (backwards))) is: year% that has passed and your age (defined at clock.el). 100 files per year i think it's enough to not accumulate too much text in a file
+
+keep in mind when pressing "e" to edit a block, by saving the file, you'll return to *log-mode* buffer
 
 opening a square bracket at org-mode will toggle the auto-completion. useful for adding existing tags without typing much!
 
