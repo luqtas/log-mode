@@ -15,7 +15,7 @@ you can create block by pressing "l" in the log screen, after typing and saving,
 
 by pressing "t" you can join multiple tags to be filtered (always) as one, e.g. [project] and [projects] unified at the "t" buffer like this: project, projects (each new line is a new definition of aliases), every time you filter "projects", tags with "project" also will be included! useful if you like to keep the typing clean by abiding to plural or whatever grammatik rules
 
-you can set a custom folder for your machine, so you can sync stuff without worrying about conflicts in software like Syncthing! logs, aliases and read states will also be shared among devices, free of conflict. read/un-read state will have the date you toggled them and the last set is what'll define for all devices! these can be updated by pressing "g" or when access the buffer once again
+you can set a custom/shared config. folder for your machine (at `customize-group`), so you can sync stuff without worrying about conflicts in software like Syncthing! logs, aliases and read states will be shared among devices, free of conflict. read/un-read state will have the date you toggled them and the last set is what'll define for all devices! these can be updated by pressing "g" or when access the buffer once again
 
 the logic for creating files when you press "l" or "e" (edits the current focused block (you can navigate on them by TAB or SHIFT-TAB (backwards))) is: year% that has passed and your age (defined at clock.el). 100 files per year i think it's enough to not accumulate too much text in a file
 
