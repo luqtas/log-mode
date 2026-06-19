@@ -1,41 +1,15 @@
 ;;; log-mode.el --- Tag-based paragraph browser with read/unread state -*- lexical-binding: t -*-
 
 ;; Author: You
-;; Version: 1.2
+;; Version: 1.4
 ;; Description: Browse paragraphs by tag across multiple files, with
-;;              read/unread tracking, read-filter toggle, inline editing,
-;;              and pagination.
-
-;;; Commentary:
-;;
-;; Tags live anywhere inside a paragraph, wrapped in square brackets,
-;; comma-separated:  [video-games, pinball, history]
-;;
-;; Entry point:  M-x log-browse  (or M-x log)
-;;
-;; Inside the *Log* buffer:
-;;   n / p         next / previous page
-;;   TAB / S-TAB   next / previous paragraph
-;;   r             toggle read/unread for paragraph at point
-;;   u             force unread
-;;   s             cycle read-state filter: ALL → unread-only → read-only → ALL
-;;   e             edit paragraph at point (opens source file, jumps to it)
-;;   f             filter with AND (all tags must match)
-;;   F             filter with OR  (any tag matches)
-;;   t             edit tag aliases (poem, poems → treated as one)
-;;   l             open (or create) YEAR%-AGE.org journal file (uses clock.el)
-;;   d             toggle date sort: ↓ newest first (default) / ↑ oldest first
-;;   q             quit
-;;
-;; Date sort parses the YEAR%-AGE.org filename convention; age is the primary
-;; sort key and year-percent the secondary one (e.g. 44-31 > 43-31 > 99-30).
-;;
-;; Status bar shows:  Log[tag] p.N/M  R read / U unread  [filter-state] [↓/↑date]
+;;              synced multi-device read/unread tracking and aliases.
 
 ;;; Code:
 
 (require 'cl-lib)
 (require 'ispell)
+(require 'clock)
 
 ;; ---------------------------------------------------------------------------
 ;; Improved race guards
@@ -48,46 +22,39 @@
     (apply orig-fun args)))
 
 (with-eval-after-load 'flyspell
-  ;; Advice existing functions
   (advice-add 'flyspell-word :around #'log-mode--flyspell-sanitize-otherchars)
   (advice-add 'flyspell-get-word :around #'log-mode--flyspell-sanitize-otherchars)
   (advice-add 'flyspell-post-command-hook :around #'log-mode--flyspell-sanitize-otherchars)
   (advice-add 'flyspell-after-change-function :around #'log-mode--flyspell-sanitize-otherchars))
 
-;; Crucial: This specifically targets the org-element error you posted
 (with-eval-after-load 'org-element
   (defun log-mode--silence-org-cache-error (orig-fun &rest args)
     (condition-case nil
         (apply orig-fun args)
-      (wrong-type-argument nil))) ;; Silently drop the type error
-
+      (wrong-type-argument nil)))
   (advice-add 'org-element--cache-sync :around #'log-mode--silence-org-cache-error))
 
 ;; ---------------------------------------------------------------------------
 ;; Customisation
 
-(defcustom log-mode-state-file
-  (expand-file-name "log-mode-read-state.eld" user-emacs-directory)
-  "File that persists read/unread state across sessions."
-  :type 'file
-  :group 'log-mode)
-
-(defcustom log-mode-auto-export-tags t
-  "If non-nil, automatically export tags to `log-mode-tags-export-file'
-every time you run `M-x log'."
-  :type 'boolean
-  :group 'log-mode)
-
-(defcustom log-mode-tags-export-file
-  (expand-file-name "log-mode-exported-tags.txt" user-emacs-directory)
-  "Path where `log-mode-export-tags' will save the list of collected tags.
-Each tag is written on a new line, sorted by frequency."
-  :type 'file
-  :group 'log-mode)
-
 (defgroup log-mode nil
   "Tag-based paragraph browser."
   :group 'convenience)
+
+(defcustom log-mode-settings-folder
+  (expand-file-name "log-mode-settings" user-emacs-directory)
+  "Shared directory where all device aliases and read-states are stored.
+Sync this folder across devices to share read/unread states."
+  :type 'directory
+  :group 'log-mode)
+
+(defcustom log-mode-device-name
+  (system-name)
+  "Unique identifier for this device (e.g., 'desktop', 'laptop').
+Used to separate state files, alias files, and the journal subfolder to
+prevent sync collisions. YOU MUST ENSURE THIS IS UNIQUE PER DEVICE."
+  :type 'string
+  :group 'log-mode)
 
 (defcustom log-mode-page-size 20
   "Number of paragraphs per page."
@@ -107,81 +74,126 @@ When nil, you are prompted when calling `log'."
   :type '(repeat string)
   :group 'log-mode)
 
-(defcustom log-mode-alias-file
-  (expand-file-name "log-mode-aliases.txt" user-emacs-directory)
-  "Path to the tag alias file.
-Each line contains comma-separated tags that are treated as equivalent.
-Example:
-  poem, poems
-  tag, tags"
-  :type 'file
-  :group 'log-mode)
-
-(defcustom log-mode-device-folder nil
-  "Subfolder name for this device under `log-mode-search-path'.
-When non-nil, the `l' key creates and opens journal files inside this
-subdirectory rather than directly in the search path.
-Example: set to \"desktop\" so pressing `l' opens
-/your-log-path/desktop/45-30.org instead of /your-log-path/45-30.org.
-Browsing with `log' always recurses into all subdirectories regardless."
-  :type '(choice (const :tag "None (use search path directly)" nil)
-                 (string :tag "Device subfolder name"))
-  :group 'log-mode)
-
 ;; ---------------------------------------------------------------------------
-;; Persistent read-state
+;; Multi-Device Read State (CRDT)
 
 (defvar log-mode--read-set (make-hash-table :test #'equal)
-  "Hash-table: paragraph-id → t when read.")
+  "Hash-table: paragraph-id -> (boolean-state . (age year-percent day-percent)).")
+
+(defun log-mode--timestamp ()
+  "Return the current clock paradigm timestamp as a list."
+  (list (clock-age) (clock-year-percent) (clock-day-percent)))
+
+(defun log-mode--timestamp-newer-p (ts1 ts2)
+  "Return t if TS1 is strictly newer than TS2 based on age -> year% -> day%."
+  (cond
+   ((null ts2) t)
+   ((null ts1) nil)
+   ((> (nth 0 ts1) (nth 0 ts2)) t)
+   ((< (nth 0 ts1) (nth 0 ts2)) nil)
+   ((> (nth 1 ts1) (nth 1 ts2)) t)
+   ((< (nth 1 ts1) (nth 1 ts2)) nil)
+   ((> (nth 2 ts1) (nth 2 ts2)) t)
+   (t nil)))
+
+(defun log-mode--portable-path (file)
+  "Convert absolute FILE path to a path relative to `log-mode-search-path'."
+  (let ((expanded (expand-file-name file))
+        (paths (if (listp log-mode-search-path)
+                   log-mode-search-path
+                 (list log-mode-search-path)))
+        (rel-path nil))
+    (catch 'found
+      (dolist (p paths)
+        (when p
+          (let ((prefix (file-name-as-directory (expand-file-name p))))
+            (when (string-prefix-p prefix expanded)
+              (setq rel-path (substring expanded (length prefix)))
+              (throw 'found t))))))
+    (or rel-path (file-name-nondirectory expanded))))
+
+(defun log-mode--portable-id (id)
+  "Ensure ID uses a portable path to maintain sync compatibility."
+  (if (string-match "^\\(.*\\)::\\([0-9]+\\)$" id)
+      (let ((file (match-string 1 id))
+            (offset (match-string 2 id)))
+        (if (file-name-absolute-p file)
+            (format "%s::%s" (log-mode--portable-path file) offset)
+          id))
+    id))
 
 (defun log-mode--state-load ()
-  (when (file-exists-p log-mode-state-file)
-    (with-temp-buffer
-      (insert-file-contents log-mode-state-file)
-      (let ((data (ignore-errors (read (current-buffer)))))
-        (when (hash-table-p data)
-          (setq log-mode--read-set data))))))
+  "Load and merge all device read states from the settings folder.
+Conflicts are resolved by keeping the state with the newest timestamp."
+  (clrhash log-mode--read-set)
+  (when (and log-mode-settings-folder (file-directory-p log-mode-settings-folder))
+    (dolist (file (directory-files log-mode-settings-folder t "-read-state\\.eld\\'"))
+      (with-temp-buffer
+        (insert-file-contents file)
+        (let ((data (ignore-errors (read (current-buffer)))))
+          (when (hash-table-p data)
+            (maphash
+             (lambda (id val)
+               ;; Auto-migrate legacy absolute-path IDs to portable IDs
+               (let* ((new-id (log-mode--portable-id id))
+                      (is-old (not (consp val)))
+                      (state (if is-old val (car val)))
+                      (ts (if is-old '(0 0 0) (cdr val)))
+                      (existing (gethash new-id log-mode--read-set))
+                      (existing-ts (if existing (cdr existing) nil)))
+                 (when (or (null existing)
+                           (log-mode--timestamp-newer-p ts existing-ts))
+                   (puthash new-id (cons state ts) log-mode--read-set))))
+             data)))))))
 
 (defun log-mode--state-save ()
-  (with-temp-file log-mode-state-file
-    (prin1 log-mode--read-set (current-buffer))))
+  "Save the current merged state to this specific device's state file."
+  (when (and log-mode-settings-folder log-mode-device-name)
+    (unless (file-directory-p log-mode-settings-folder)
+      (make-directory log-mode-settings-folder t))
+    (let ((file (expand-file-name (format "%s-read-state.eld" log-mode-device-name)
+                                  log-mode-settings-folder))
+          (print-length nil)
+          (print-level nil))
+      (with-temp-file file
+        (prin1 log-mode--read-set (current-buffer))))))
 
 (defun log-mode--para-id (file char-offset)
-  (format "%s::%d" (expand-file-name file) char-offset))
+  (format "%s::%d" (log-mode--portable-path file) char-offset))
 
 (defun log-mode--read-p (id)
-  (gethash id log-mode--read-set))
+  (let ((val (gethash id log-mode--read-set)))
+    (if (consp val) (car val) val)))
 
 (defun log-mode--set-read (id value)
-  (if value
-      (puthash id t log-mode--read-set)
-    (remhash id log-mode--read-set))
+  (puthash id (cons value (log-mode--timestamp)) log-mode--read-set)
   (log-mode--state-save))
 
 ;; ---------------------------------------------------------------------------
-;; Tag aliases
+;; Shared Tag Aliases
 
 (defvar log-mode--aliases nil
   "List of alias groups. Each group is a list of equivalent tag strings.")
 
 (defun log-mode--aliases-load ()
-  "Load tag aliases from `log-mode-alias-file'."
+  "Load and merge tag aliases from all alias files in the settings folder."
   (setq log-mode--aliases nil)
-  (when (file-exists-p log-mode-alias-file)
-    (with-temp-buffer
-      (insert-file-contents log-mode-alias-file)
-      (goto-char (point-min))
-      (while (not (eobp))
-        (let* ((line (buffer-substring-no-properties
-                      (line-beginning-position) (line-end-position)))
-               (trimmed (string-trim line)))
-          (unless (string-empty-p trimmed)
-            (let ((group (cl-remove-if #'string-empty-p
-                                       (mapcar #'string-trim
-                                               (split-string trimmed ",")))))
-              (when (>= (length group) 2)
-                (push (mapcar #'downcase group) log-mode--aliases)))))
-        (forward-line 1)))))
+  (when (and log-mode-settings-folder (file-directory-p log-mode-settings-folder))
+    (dolist (file (directory-files log-mode-settings-folder t "-aliases\\.txt\\'"))
+      (with-temp-buffer
+        (insert-file-contents file)
+        (goto-char (point-min))
+        (while (not (eobp))
+          (let* ((line (buffer-substring-no-properties
+                        (line-beginning-position) (line-end-position)))
+                 (trimmed (string-trim line)))
+            (unless (string-empty-p trimmed)
+              (let ((group (cl-remove-if #'string-empty-p
+                                         (mapcar #'string-trim
+                                                 (split-string trimmed ",")))))
+                (when (>= (length group) 2)
+                  (push (mapcar #'downcase group) log-mode--aliases)))))
+          (forward-line 1))))))
 
 (defun log-mode--alias-group (tag)
   "Return the alias group containing TAG, or nil if none."
@@ -240,9 +252,6 @@ A tag bracket must not be preceded or followed by another bracket."
 (defun log-mode--paragraphs-in-file (file)
   "Return list of plists (:text :tags :id :file) for every paragraph in FILE."
   (with-temp-buffer
-    ;; Null out ALL hooks that org-element/flyspell/jit-lock register
-    ;; globally, so reading file content into this temp buffer doesn't
-    ;; corrupt their state.
     (let ((inhibit-modification-hooks t)
           (after-change-functions nil)
           (before-change-functions nil)
@@ -252,12 +261,10 @@ A tag bracket must not be preceded or followed by another bracket."
     (let ((paras nil))
       (goto-char (point-min))
       (while (not (eobp))
-        ;; skip blank lines
         (while (and (not (eobp)) (looking-at "^[ \t]*$"))
           (forward-line 1))
         (unless (eobp)
           (let ((start (point)))
-            ;; consume non-blank lines
             (while (and (not (eobp)) (not (looking-at "^[ \t]*$")))
               (forward-line 1))
             (let* ((text (string-trim
@@ -267,13 +274,12 @@ A tag bracket must not be preceded or followed by another bracket."
                 (push (list :text text
                             :tags (copy-sequence tags)
                             :id   (log-mode--para-id file start)
-                            :file file)
+                            :file (expand-file-name file))
                       paras))))))
       (nreverse paras))))
 
 (defun log-mode--all-tags (paragraphs)
-  "Return list of unique tags across PARAGRAPHS, ordered by frequency (descending).
-Tags with equal frequency are sorted alphabetically as a tiebreaker."
+  "Return list of unique tags across PARAGRAPHS, ordered by frequency (descending)."
   (let ((counts (make-hash-table :test #'equal)))
     (dolist (p paragraphs)
       (dolist (tag (plist-get p :tags))
@@ -288,9 +294,7 @@ Tags with equal frequency are sorted alphabetically as a tiebreaker."
                       (> ca cb))))))))
 
 (defun log-mode--filter-paragraphs (paragraphs tags)
-  "Keep PARAGRAPHS matching every tag in TAGS (AND semantics, alias-aware).
-Each tag in TAGS is expanded to its alias group; a paragraph matches if it
-contains at least one member of each group."
+  "Keep PARAGRAPHS matching every tag in TAGS (AND semantics, alias-aware)."
   (if (null tags)
       paragraphs
     (cl-remove-if-not
@@ -336,11 +340,7 @@ contains at least one member of each group."
 ;; Date sorting
 
 (defun log-mode--filename-date-key (file)
-  "Return a numeric sort key for FILE based on the YEAR%-AGE.org convention.
-Parses the basename as YEARPCT-AGE and returns (AGE * 10000 + YEARPCT), so
-age is the primary sort key and year-percent the secondary one.
-Examples: 44-31.org → 310044, 43-31.org → 310043, 99-30.org → 300099.
-Files that do not match the pattern return 0 and sort to the bottom."
+  "Return a numeric sort key for FILE based on the YEAR%-AGE.org convention."
   (let ((base (file-name-base (file-name-nondirectory file))))
     (if (string-match "\\`\\([0-9]+\\)-\\([0-9]+\\)\\'" base)
         (+ (* (string-to-number (match-string 2 base)) 10000)
@@ -348,8 +348,7 @@ Files that do not match the pattern return 0 and sort to the bottom."
       0)))
 
 (defun log-mode--sort-paragraphs-by-date (paragraphs order)
-  "Return a sorted copy of PARAGRAPHS by their filename date key.
-ORDER `desc' puts newest (highest key) first; `asc' puts oldest first."
+  "Return a sorted copy of PARAGRAPHS by their filename date key."
   (cl-sort (copy-sequence paragraphs)
            (if (eq order 'asc) #'< #'>)
            :key (lambda (p)
@@ -362,28 +361,22 @@ ORDER `desc' puts newest (highest key) first; `asc' puts oldest first."
 ;; ---------------------------------------------------------------------------
 ;; Buffer state
 
-(defvar-local log-mode--editing-para-id nil
-  "ID of the paragraph most recently opened for editing.")
-(defvar-local log-mode--editing-para-text nil
-  "Text of the paragraph being edited, to track it if its offset shifts.")
-(defvar-local log-mode--editing-prev-id nil
-  "ID of the preceding paragraph, for fallback if the edited one is deleted.")
-(defvar-local log-mode--editing-prev-text nil
-  "Text of the preceding paragraph, for fallback if its offset shifts.")
-(defvar-local log-mode--editing-next-id nil
-  "ID of the following paragraph, preferred focus if the edited one is deleted.")
-(defvar-local log-mode--editing-next-text nil
-  "Text of the following paragraph, for fallback if its offset shifts.")
-(defvar-local log-mode--paragraphs nil    "Tag-filtered paragraph list.")
-(defvar-local log-mode--all-paragraphs nil "Unfiltered paragraph list.")
-(defvar-local log-mode--filter-tags nil   "Active tag filter list.")
-(defvar-local log-mode--filter-mode 'and  "Filter mode: and or or.")
-(defvar-local log-mode--read-filter nil   "Read-state filter: nil, unread, or read.")
-(defvar-local log-mode--page 1            "Current page (1-based).")
-(defvar-local log-mode--total-pages 1     "Total pages.")
-(defvar-local log-mode--para-markers nil  "Alist of (ID . marker) for current page.")
-(defvar-local log-mode--date-sort 'desc
-  "Date sort direction: desc (newest first) or asc (oldest first).")
+(defvar-local log-mode--editing-para-id nil)
+(defvar-local log-mode--editing-para-file nil)
+(defvar-local log-mode--editing-para-text nil)
+(defvar-local log-mode--editing-prev-id nil)
+(defvar-local log-mode--editing-prev-text nil)
+(defvar-local log-mode--editing-next-id nil)
+(defvar-local log-mode--editing-next-text nil)
+(defvar-local log-mode--paragraphs nil)
+(defvar-local log-mode--all-paragraphs nil)
+(defvar-local log-mode--filter-tags nil)
+(defvar-local log-mode--filter-mode 'and)
+(defvar-local log-mode--read-filter nil)
+(defvar-local log-mode--page 1)
+(defvar-local log-mode--total-pages 1)
+(defvar-local log-mode--para-markers nil)
+(defvar-local log-mode--date-sort 'desc)
 
 (defun log-mode--visible-paragraphs ()
   "Return paragraphs after tag-filter, read-filter, and date sort."
@@ -430,20 +423,13 @@ ORDER `desc' puts newest (highest key) first; `asc' puts oldest first."
         (t "all")))
 
 (defun log-mode--render (&optional target-id)
-  "Redraw the *Log* buffer for the current page.
-If TARGET-ID is given and its paragraph is in the current visible list,
-navigate to the page that contains it before rendering, then place point
-on it.  If TARGET-ID is not in the visible list (filtered out or deleted),
-render falls back to the first paragraph on the current page."
+  "Redraw the *Log* buffer for the current page."
   (with-current-buffer (get-buffer-create "*Log*")
     (let* ((inhibit-read-only t)
            (visible (log-mode--visible-paragraphs))
            (total (length visible))
            (page-size log-mode-page-size)
            (total-pages (max 1 (ceiling total page-size)))
-           ;; If the target paragraph exists in the visible list, jump to
-           ;; whichever page holds it.  This must happen before (page …) is
-           ;; bound so the slice is built for the right page.
            (_ (when target-id
                 (let ((idx (cl-position target-id visible
                                         :key (lambda (p) (plist-get p :id))
@@ -563,8 +549,6 @@ render falls back to the first paragraph on the current page."
          (nrows      (max 1 (ceiling (length candidates) ncols)))
          (sel-row    (/ index ncols))
          (inhibit-read-only t)
-         ;; Inhibit after-change-functions so flyspell / jit-lock don't
-         ;; trigger on every keystroke-driven redraw of the popup buffer.
          (inhibit-modification-hooks t))
     (with-current-buffer (get-buffer-create log-mode--tag-popup-buf)
       (erase-buffer)
@@ -674,6 +658,15 @@ render falls back to the first paragraph on the current page."
                 (insert choice ", "))))))
     (insert ", ")))
 
+(defun log-mode--minibuffer-ret ()
+  "RET in the tag minibuffer."
+  (interactive)
+  (let* ((ctx    (log-mode--minibuffer-context log-mode--minibuffer-all-tags))
+         (prefix (and ctx (nth 1 ctx))))
+    (if (and prefix (not (string-empty-p prefix)))
+        (log-mode--minibuffer-insert-tag)
+      (exit-minibuffer))))
+
 (defun log-mode--minibuffer-next ()
   (interactive)
   (if (get-buffer-window log-mode--tag-popup-buf)
@@ -701,8 +694,9 @@ render falls back to the first paragraph on the current page."
 (defvar log-mode-tag-minibuffer-map
   (let ((map (make-sparse-keymap)))
     (set-keymap-parent map minibuffer-local-map)
+    (define-key map (kbd "RET")       #'log-mode--minibuffer-ret)
+    (define-key map (kbd "M-RET")     #'exit-minibuffer)
     (define-key map (kbd "TAB")       #'log-mode--minibuffer-insert-tag)
-    (define-key map (kbd "M-RET")     #'log-mode--minibuffer-insert-tag)
     (define-key map (kbd "M-<right>") #'log-mode--minibuffer-next)
     (define-key map (kbd "M-<left>")  #'log-mode--minibuffer-prev)
     (define-key map (kbd "M-<down>")  #'log-mode--minibuffer-next-row)
@@ -716,10 +710,9 @@ render falls back to the first paragraph on the current page."
                     (minibuffer-with-setup-hook
                         (lambda ()
                           (add-hook 'post-command-hook #'log-mode--minibuffer-post-command nil t)
-                          ;; Only insert initial-input if it is provided and not empty
                           (when (and initial-input (not (string-empty-p initial-input)))
                             (insert initial-input)))
-                      (read-from-minibuffer "Tags (comma separated, TAB to complete, RET to finish): "
+                      (read-from-minibuffer "Tags (RET=complete-or-search, M-RET=force-search, M-arrows=navigate): "
                                             nil log-mode-tag-minibuffer-map))
                   (log-mode--tag-popup-hide)
                   (remove-hook 'post-command-hook #'log-mode--minibuffer-post-command t))))
@@ -728,21 +721,6 @@ render falls back to the first paragraph on the current page."
 
 ;; ---------------------------------------------------------------------------
 ;; Commands
-
-(defun log-mode-export-tags (&optional silent)
-  "Export all collected tags to `log-mode-tags-export-file`.
-If SILENT is non-nil, suppress the completion message in the echo area."
-  (interactive)
-  (unless log-mode--all-paragraphs
-    (user-error "No paragraphs loaded. Run `log` first to initialize data."))
-  (let ((tags (log-mode--all-tags log-mode--all-paragraphs))
-        (target log-mode-tags-export-file))
-    (with-temp-file target
-      (insert "# Auto-generated list of all tags used in log-mode\n")
-      (dolist (tag tags)
-        (insert tag "\n")))
-    (unless silent
-      (message "Saved %d unique tags to %s" (length tags) target))))
 
 (defun log-mode-next-page ()
   "Go to the next page."
@@ -790,7 +768,6 @@ If SILENT is non-nil, suppress the completion message in the echo area."
   (let ((id (log-mode--para-at-point)))
     (if (null id) (message "No paragraph at point.")
       (let* ((now-read (not (log-mode--read-p id)))
-             ;; find the next paragraph id before we re-render
              (pos (point))
              (next-id (let (next-cell)
                         (dolist (cell log-mode--para-markers)
@@ -802,7 +779,6 @@ If SILENT is non-nil, suppress the completion message in the echo area."
                         (car next-cell))))
         (log-mode--set-read id now-read)
         (message "Marked as %s." (if now-read "read" "unread"))
-        ;; advance to next para, or stay on current if last on page
         (log-mode--render (or next-id id))))))
 
 (defun log-mode-mark-unread ()
@@ -815,7 +791,7 @@ If SILENT is non-nil, suppress the completion message in the echo area."
       (log-mode--render id))))
 
 (defun log-mode-cycle-read-filter ()
-  "Cycle read-state filter: all → unread-only → read-only → all."
+  "Cycle read-state filter: all -> unread-only -> read-only -> all."
   (interactive)
   (setq log-mode--read-filter
         (cond ((null log-mode--read-filter) 'unread)
@@ -831,88 +807,81 @@ If SILENT is non-nil, suppress the completion message in the echo area."
   (let ((id (log-mode--para-at-point)))
     (if (null id)
         (message "No paragraph at point.")
-      (if (not (string-match "^\\(.*\\)::\\([0-9]+\\)$" id))
-          (message "Cannot parse paragraph id: %s" id)
-        (let* ((file   (match-string 1 id))
-               (offset (string-to-number (match-string 2 id)))
-               (para   (cl-find id log-mode--all-paragraphs
-                                :key (lambda (p) (plist-get p :id))
-                                :test #'equal))
-               (text   (and para (plist-get para :text))))
-          (if (not (file-exists-p file))
-              (message "File not found: %s" file)
-            (let ((log-buf (current-buffer)))
-              (setq log-mode--editing-para-id id)
-              (setq log-mode--editing-para-text text)
-              (setq log-mode--editing-prev-id nil
-                    log-mode--editing-prev-text nil)
+      (let* ((para   (cl-find id log-mode--all-paragraphs
+                              :key (lambda (p) (plist-get p :id))
+                              :test #'equal))
+             (file   (plist-get para :file))
+             (offset (when (string-match "::\\([0-9]+\\)$" id)
+                       (string-to-number (match-string 1 id))))
+             (text   (and para (plist-get para :text))))
+        (if (not (and file (file-exists-p file)))
+            (message "File not found: %s" file)
+          (let ((log-buf (current-buffer)))
+            (setq log-mode--editing-para-id id)
+            (setq log-mode--editing-para-file file)
+            (setq log-mode--editing-para-text text)
+            (setq log-mode--editing-prev-id nil
+                  log-mode--editing-prev-text nil)
 
-              ;; Find the visual preceding paragraph
-              (catch 'found
-                (let ((prev-id nil) (prev-text nil) (found-current nil))
-                  (dolist (p (log-mode--visible-paragraphs))
-                    (cond
-                     (found-current
-                      (setq log-mode--editing-next-id   (plist-get p :id)
-                            log-mode--editing-next-text (plist-get p :text))
-                      (throw 'found t))
-                     ((equal (plist-get p :id) id)
-                      (setq log-mode--editing-prev-id   prev-id
-              log-mode--editing-prev-text prev-text
-              found-current               t))
-                     (t
-                      (setq prev-id   (plist-get p :id)
-                            prev-text (plist-get p :text)))))))
+            (catch 'found
+              (let ((prev-id nil) (prev-text nil) (found-current nil))
+                (dolist (p (log-mode--visible-paragraphs))
+                  (cond
+                   (found-current
+                    (setq log-mode--editing-next-id   (plist-get p :id)
+                          log-mode--editing-next-text (plist-get p :text))
+                    (throw 'found t))
+                   ((equal (plist-get p :id) id)
+                    (setq log-mode--editing-prev-id   prev-id
+                          log-mode--editing-prev-text prev-text
+                          found-current               t))
+                   (t
+                    (setq prev-id   (plist-get p :id)
+                          prev-text (plist-get p :text)))))))
 
-              (find-file file)
-              (goto-char (max (point-min) (min (1+ offset) (point-max))))
-              (let ((hook-fn nil))
-                (setq hook-fn
-                      (lambda ()
-                        (when (string= (expand-file-name buffer-file-name)
-                                       (expand-file-name file))
-                          (remove-hook 'after-save-hook hook-fn t)
-                          (when (buffer-live-p log-buf)
-                            (switch-to-buffer log-buf))
-                          (log-mode--rescan-file file log-buf))))
-                (add-hook 'after-save-hook hook-fn nil t))
-              (message "edit freely. save to return"))))))))
+            (find-file file)
+            (goto-char (max (point-min) (min (1+ (or offset 0)) (point-max))))
+            (let ((hook-fn nil))
+              (setq hook-fn
+                    (lambda ()
+                      (when (string= (expand-file-name buffer-file-name)
+                                     (expand-file-name file))
+                        (remove-hook 'after-save-hook hook-fn t)
+                        (when (buffer-live-p log-buf)
+                          (switch-to-buffer log-buf))
+                        (log-mode--rescan-file file log-buf))))
+              (add-hook 'after-save-hook hook-fn nil t))
+            (message "edit freely. save to return")))))))
 
 (defun log-mode--best-focus-id (old-id candidates)
   "Return the best paragraph ID from CANDIDATES to focus on after a rescan."
-  (let* ((old-file (when (string-match "^\\(.*\\)::\\([0-9]+\\)$" old-id)
-                     (match-string 1 old-id)))
-         (old-offset (when old-file (string-to-number (match-string 2 old-id)))))
+  (let ((old-offset (when (and old-id (string-match "::\\([0-9]+\\)$" old-id))
+                      (string-to-number (match-string 1 old-id)))))
     (or
-     ;; 1. Exact match on OLD-ID (paragraph unchanged).
      (plist-get (cl-find old-id candidates :key (lambda (p) (plist-get p :id)) :test #'equal) :id)
-     ;; 2. Match by text (paragraph offset shifted).
-     (when (and old-file log-mode--editing-para-text)
+     (when (and log-mode--editing-para-file log-mode--editing-para-text)
        (plist-get (cl-find-if (lambda (p)
                                 (and (string= (expand-file-name (plist-get p :file))
-                                              (expand-file-name old-file))
+                                              (expand-file-name log-mode--editing-para-file))
                                      (string= (plist-get p :text) log-mode--editing-para-text)))
                               candidates)
                   :id))
-     ;; 3. Match by next paragraph's ID (prefer forward on deletion).
      (when log-mode--editing-next-id
        (plist-get (cl-find log-mode--editing-next-id candidates
                            :key (lambda (p) (plist-get p :id)) :test #'equal) :id))
-     ;; 4. Match by next paragraph's text (if its offset shifted).
-     (when (and log-mode--editing-next-text old-file)
+     (when (and log-mode--editing-next-text log-mode--editing-para-file)
        (plist-get (cl-find-if (lambda (p)
                                 (and (string= (expand-file-name (plist-get p :file))
-                                              (expand-file-name old-file))
+                                              (expand-file-name log-mode--editing-para-file))
                                      (string= (plist-get p :text) log-mode--editing-next-text)))
                               candidates)
                   :id))
-     ;; 5. Match by previous paragraph's ID.  ← was 3, renumber comments only
-     (when old-offset
+     (when (and log-mode--editing-para-file old-offset)
        (let ((same-file-cands
               (cl-remove-if-not
                (lambda (p)
                  (and (string= (expand-file-name (plist-get p :file))
-                               (expand-file-name old-file))
+                               (expand-file-name log-mode--editing-para-file))
                       (when (string-match "::\\([0-9]+\\)$" (plist-get p :id))
                         (<= (string-to-number (match-string 1 (plist-get p :id)))
                             old-offset))))
@@ -921,9 +890,7 @@ If SILENT is non-nil, suppress the completion message in the echo area."
            (plist-get (car (last same-file-cands)) :id)))))))
 
 (defun log-mode--rescan-file (file log-buf)
-  "Schedule a re-parse of FILE after a short idle delay.
-Deferring avoids a race with org-element--cache-sync, which also fires
-from after-save-hook and must finish before we read the buffer again."
+  "Schedule a re-parse of FILE after a short idle delay."
   (run-with-idle-timer 0.3 nil #'log-mode--do-rescan-file file log-buf))
 
 (defun log-mode--do-rescan-file (file log-buf)
@@ -937,49 +904,52 @@ from after-save-hook and must finish before we read the buffer again."
                                                 (expand-file-name file)))
                            log-mode--all-paragraphs))
              (all         (append other-paras new-paras)))
-        ;; Update buffer lists first
         (setq log-mode--all-paragraphs all
               log-mode--paragraphs     (log-mode--filter-paragraphs all log-mode--filter-tags)
               log-mode--page           1)
-        ;; THEN find the target ID among items that are actually visible
         (let* ((visible   (log-mode--visible-paragraphs))
                (target-id (and old-id (log-mode--best-focus-id old-id visible))))
           (log-mode--render target-id)
           (message "Log refreshed after save."))))))
 
 (defun log-mode-edit-aliases ()
-  "Open the tag alias file for editing.
-Each line: comma-separated tags treated as equivalent, e.g. poem, poems.
-The Log refreshes automatically when you save."
+  "Open the tag alias file for this specific device for editing."
   (interactive)
-  (unless (file-exists-p log-mode-alias-file)
-    (with-temp-file log-mode-alias-file
-      (insert "# Tag aliases for log-mode\n"
-              "# Each line: comma-separated equivalent tags\n"
-              "# Example:\n"
-              "#   poem, poems\n"
-              "#   tag, tags\n")))
-  (let ((log-buf (current-buffer)))
-    (find-file-other-window log-mode-alias-file)
-    (let ((hook-fn nil))
-      (setq hook-fn
-            (lambda ()
-              (when (string= (expand-file-name buffer-file-name)
-                             (expand-file-name log-mode-alias-file))
-                (remove-hook 'after-save-hook hook-fn t)
-                (log-mode--aliases-load)
-                (when (buffer-live-p log-buf)
-                  (with-current-buffer log-buf
-                    (log-mode--render)
-                    (message "Aliases reloaded."))))))
-      (add-hook 'after-save-hook hook-fn nil t))
-    (message "Edit aliases. Save to reload. Format: tag1, tag2 (one group per line)")))
+  (unless (and log-mode-settings-folder log-mode-device-name)
+    (user-error "Please configure `log-mode-settings-folder` and `log-mode-device-name` first"))
+  (unless (file-directory-p log-mode-settings-folder)
+    (make-directory log-mode-settings-folder t))
+
+  (let ((alias-file (expand-file-name (format "%s-aliases.txt" log-mode-device-name)
+                                      log-mode-settings-folder)))
+    (unless (file-exists-p alias-file)
+      (with-temp-file alias-file
+        (insert "# Tag aliases for log-mode\n"
+                "# Each line: comma-separated equivalent tags\n"
+                "# Example:\n"
+                "#   poem, poems\n"
+                "#   tag, tags\n")))
+    (let ((log-buf (current-buffer)))
+      (find-file-other-window alias-file)
+      (let ((hook-fn nil))
+        (setq hook-fn
+              (lambda ()
+                (when (string= (expand-file-name buffer-file-name)
+                               (expand-file-name alias-file))
+                  (remove-hook 'after-save-hook hook-fn t)
+                  (log-mode--aliases-load)
+                  (when (buffer-live-p log-buf)
+                    (with-current-buffer log-buf
+                      (log-mode--render)
+                      (message "Aliases merged and reloaded."))))))
+        (add-hook 'after-save-hook hook-fn nil t))
+      (message "Edit aliases. Save to merge & reload. Format: tag1, tag2 (one group per line)"))))
 
 (defun log-mode-change-filter ()
   "Prompt for a new tag filter and apply it using the current filter mode."
   (interactive)
   (let* ((all-tags (log-mode--all-tags log-mode--all-paragraphs))
-         (tags     (log-mode--read-tags all-tags nil))) ;; nil = empty/blank
+         (tags     (log-mode--read-tags all-tags nil)))
     (setq log-mode--filter-tags tags
           log-mode--paragraphs  (log-mode--apply-tag-filter
                                  log-mode--all-paragraphs tags log-mode--filter-mode)
@@ -991,10 +961,10 @@ The Log refreshes automatically when you save."
   (interactive)
   (let* ((all-tags (log-mode--all-tags log-mode--all-paragraphs))
          (initial-input (mapconcat #'identity log-mode--filter-tags ", "))
-         (mode log-mode--filter-mode) ;; Capture current mode
+         (mode log-mode--filter-mode)
          (tags (log-mode--read-tags all-tags initial-input)))
     (setq log-mode--filter-tags tags
-          log-mode--filter-mode mode ;; Preserve mode
+          log-mode--filter-mode mode
           log-mode--paragraphs  (log-mode--apply-tag-filter
                                  log-mode--all-paragraphs tags mode)
           log-mode--page 1)
@@ -1015,17 +985,11 @@ The Log refreshes automatically when you save."
 
 (defun log-mode-open-clock-journal ()
   "Open (or create) the journal file for the current year% and age.
-The filename is YEAR%-AGE.org, e.g. 44-30.org, resolved under
-`log-mode-search-path'.  When `log-mode-device-folder' is set the file
-lives in that subdirectory (e.g. /logs/desktop/44-30.org).
-If the file already exists it is opened; otherwise it is created.
-The file is visited in the current window, replacing the *Log* buffer."
+Uses `log-mode-device-name` to resolve a subfolder in `log-mode-search-path`."
   (interactive)
-  (require 'clock)
   (let* ((year-pct  (truncate (clock-year-percent)))
          (age       (clock-age))
          (filename  (format "%d-%d.org" year-pct age))
-         ;; Normalise search-path to a list of directories
          (dirs      (let ((sp log-mode-search-path))
                       (cond ((null sp)
                              (user-error
@@ -1033,13 +997,11 @@ The file is visited in the current window, replacing the *Log* buffer."
 please customise it first"))
                             ((stringp sp) (list sp))
                             (t sp))))
-         ;; Scope each dir to the device subfolder when configured
          (effective-dirs
-          (if log-mode-device-folder
-              (mapcar (lambda (d) (expand-file-name log-mode-device-folder d))
+          (if (and log-mode-device-name (not (string-empty-p log-mode-device-name)))
+              (mapcar (lambda (d) (expand-file-name log-mode-device-name d))
                       dirs)
             dirs))
-         ;; Look for an existing file in any of the effective directories
          (existing  (cl-find-if
                      (lambda (dir)
                        (file-exists-p (expand-file-name filename dir)))
@@ -1049,13 +1011,50 @@ please customise it first"))
     (unless (file-exists-p target)
       (make-directory target-dir t)
       (message "Created %s" target))
-    (find-file target)))
+    (let* ((log-buf    (current-buffer))
+           (current-id (log-mode--para-at-point))
+           (current-para (and current-id
+                              (cl-find current-id log-mode--all-paragraphs
+                                       :key (lambda (p) (plist-get p :id))
+                                       :test #'equal))))
+      (setq log-mode--editing-para-id   current-id
+            log-mode--editing-para-file (and current-para
+                                             (plist-get current-para :file))
+            log-mode--editing-para-text (and current-para
+                                             (plist-get current-para :text))
+            log-mode--editing-prev-id   nil
+            log-mode--editing-prev-text nil
+            log-mode--editing-next-id   nil
+            log-mode--editing-next-text nil)
+      (when current-id
+        (catch 'found
+          (let ((prev-id nil) (prev-text nil) (found-current nil))
+            (dolist (p (log-mode--visible-paragraphs))
+              (cond
+               (found-current
+                (setq log-mode--editing-next-id   (plist-get p :id)
+                      log-mode--editing-next-text (plist-get p :text))
+                (throw 'found t))
+               ((equal (plist-get p :id) current-id)
+                (setq log-mode--editing-prev-id   prev-id
+                      log-mode--editing-prev-text prev-text
+                      found-current               t))
+               (t
+                (setq prev-id   (plist-get p :id)
+                      prev-text (plist-get p :text))))))))
+      (find-file target)
+      (let ((hook-fn nil))
+        (setq hook-fn
+              (lambda ()
+                (when (string= (expand-file-name buffer-file-name)
+                               (expand-file-name target))
+                  (remove-hook 'after-save-hook hook-fn t)
+                  (log-mode--rescan-file target log-buf))))
+        (add-hook 'after-save-hook hook-fn nil t))
+      (message "Editing journal. Log rescans on save, but stays here."))))
 
 (defun log-mode-toggle-date-sort ()
-  "Toggle the date sort order between descending (newest first) and ascending.
-Paragraphs are sorted by the YEAR%-AGE.org filename convention: age is the
-primary sort key and year-percent the secondary one, so e.g.
-44-31.org > 43-31.org > 99-30.org in descending order."
+  "Toggle the date sort order between descending and ascending."
   (interactive)
   (setq log-mode--date-sort
         (if (eq log-mode--date-sort 'desc) 'asc 'desc)
@@ -1071,18 +1070,18 @@ primary sort key and year-percent the secondary one, so e.g.
   (interactive)
   (kill-buffer (current-buffer)))
 
-
 ;; ---------------------------------------------------------------------------
 ;; Auto-refresh on focus
 
 (defun log-mode--full-refresh ()
-  "Rescan all source files and re-render the *Log* buffer.
-Called automatically when the *Log* window receives focus."
+  "Rescan all source files and re-render the *Log* buffer."
   (interactive)
   (let ((log-buf (get-buffer "*Log*")))
     (when (buffer-live-p log-buf)
       (with-current-buffer log-buf
-        ;; Capture where the cursor is NOW, before any rescan changes things.
+        ;; IMPORTANT: Reload synced states whenever refreshing!
+        (log-mode--state-load)
+        (log-mode--aliases-load)
         (let* ((current-id (log-mode--para-at-point))
                (sp   log-mode-search-path)
                (dirs (cond ((null sp)    nil)
@@ -1098,17 +1097,12 @@ Called automatically when the *Log* window receives focus."
                   (log-mode--apply-tag-filter all
                                              log-mode--filter-tags
                                              log-mode--filter-mode))
-            ;; Pass current-id so log-mode--render puts point back on the
-            ;; same paragraph (same logic as after-save via log-mode-edit-paragraph).
             (log-mode--render current-id)))))))
 
 (defun log-mode--on-window-selected (frame)
-  "Trigger a full refresh when the *Log* buffer becomes the selected window.
-Added to `window-selection-change-functions' by `log-mode'."
+  "Trigger a full refresh when the *Log* buffer becomes the selected window."
   (when (eq (window-buffer (frame-selected-window frame))
             (get-buffer "*Log*"))
-    ;; Defer the rescan by a short idle period so any in-flight
-    ;; after-save-hook / org-element work can finish first.
     (run-with-idle-timer 0.4 nil #'log-mode--full-refresh)))
 
 ;; ---------------------------------------------------------------------------
@@ -1120,10 +1114,8 @@ Added to `window-selection-change-functions' by `log-mode'."
   (setq buffer-read-only t
         truncate-lines nil)
   (visual-line-mode 1)
-  ;; Refresh whenever this buffer's window is focused.
   (add-hook 'window-selection-change-functions
             #'log-mode--on-window-selected)
-  ;; Remove the global hook when the *Log* buffer is killed.
   (add-hook 'kill-buffer-hook
             (lambda ()
               (remove-hook 'window-selection-change-functions
@@ -1144,15 +1136,12 @@ Added to `window-selection-change-functions' by `log-mode'."
 (define-key log-mode-map (kbd "d")         #'log-mode-toggle-date-sort)
 (define-key log-mode-map (kbd "TAB")       #'log-mode-next-paragraph)
 (define-key log-mode-map (kbd "<backtab>") #'log-mode-prev-paragraph)
-
-;; Fresh-slate filters
 (define-key log-mode-map (kbd "f") (lambda () (interactive)
                                      (setq log-mode--filter-mode 'and)
                                      (log-mode-change-filter)))
 (define-key log-mode-map (kbd "F") (lambda () (interactive)
                                      (setq log-mode--filter-mode 'or)
                                      (log-mode-change-filter)))
-;; Agnostic editor
 (define-key log-mode-map (kbd "M-f") #'log-mode-edit-filter)
 
 ;; ---------------------------------------------------------------------------
@@ -1185,10 +1174,7 @@ Added to `window-selection-change-functions' by `log-mode'."
             log-mode--read-filter    nil
             log-mode--date-sort      'desc
             log-mode--page           1)
-      (log-mode--render)
-      ;; Auto-export hook added here:
-      (when log-mode-auto-export-tags
-        (log-mode-export-tags t)))
+      (log-mode--render))
     (switch-to-buffer buf)
     (message "l=log n/p=pages S-/TAB=cycle r=read s=show-filter e=edit f=filter d=sort g=refresh q=quit")))
 
