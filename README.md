@@ -29,7 +29,7 @@ this is what i have on my init.el!
 ```
 
 i also have this on my init.el! <br>
-it starts Emacs on log-mode and it will grab the highest number of a TODO tag... i prioritize notes like this: [todo27] > [todo5] > [todo1] > [todo] - so i always know what's more emergent!
+it starts Emacs on log-mode and it will set the initial filter to the highest number of a TODO tag... i prioritize notes like this: [todo27] > [todo5] > [todo1] > [todo] - so i always know what's more emergent!
 ```lisp
 ;; this ones starts log-mode at startup with our highest todoN tag as a filter
 (defun log-open-top-todo ()
