@@ -4,7 +4,7 @@ cheap copy of Logseq with some extra goods
 # how
 i have no idea, ask Claude
 
-set the directory folder on `cus-g` `log-mode` and other stuff to your taste and by entering the mode (with `M-x log`), you'll be asked to chose a tag to filter. tags are set from phrases/words between square brackets and separated by comma, e.g. [personal, todo, cooking], that's 3 tags... each paragraph is treated as block you can read, un-read and sort by date!
+set the directory folder on `M-x cus-g` (customize-group's shortcut) `log-mode` and other stuff to your taste and by entering the mode (with `M-x log`), you'll be asked to chose a tag to filter. tags are set from phrases/words between square brackets and separated by comma, e.g. [personal, todo, cooking], that's 3 tags... each paragraph is treated as block you can read, un-read and sort by date!
 
 this is a block about [emacs]
 
