@@ -15,13 +15,13 @@ you can create a block by pressing "l" in the log screen, after typing and savin
 
 by pressing "t" you can join multiple tags to be filtered (always) as one, e.g. [project] and [projects] unified at the "t" buffer like this: project, projects (each new line is a new definition of aliases), every time you filter "projects", tags with "project" also will be included! useful if you like to keep the typing clean by abiding to plural or whatever grammatik rules
 
-you can set a custom/shared config. folder for your machine (at `customize-group`), so you can sync stuff without worrying about conflicts in software like Syncthing! logs, aliases and read states will be shared among devices, free of conflict. read/un-read state will have the date you toggled them and the last set is what'll define for all devices! these can be updated by pressing "g" or when you access the buffer once again
+you can set a custom/shared config. folder for your machine (at `customize-group`), so you can sync stuff without worrying about conflicts in software like Syncthing! logs, aliases and read states will be shared among devices, free of conflict. read/un-read state will have the date you toggled them and the last set is what'll define for all devices! if created a new block in another device sharing the same database or marked something as read, you can press "g" or access the buffer once again to get the updates
 
 the logic for creating files when you press "l" or "e" (edits the current focused block (you can navigate on them by TAB or SHIFT-TAB (backwards))) is: year% that has passed and your age (defined at clock.el). 100 files per year i think it's enough to not accumulate too much text in a file
 
 keep in mind when pressing "e" to edit a block, by saving the file, you'll return to *log-mode* buffer
 
-opening a square bracket at org-mode will toggle the auto-completion. useful for adding existing tags without typing much!
+`log-tag-completion.el` will make square brackets at org-mode toggle the auto-completion. useful for adding existing tags without typing much!
 
 this is what i have on my init.el!
 ```lisp
