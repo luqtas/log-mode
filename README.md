@@ -19,6 +19,7 @@ the logic for creating files when you press "l" or "e" (edits the current focuse
 
 opening a square bracket at org-mode will toggle the auto-completion. useful for adding existing tags without typing much!
 
+ 
 this is what i have on my init.el! it starts Emacs on log-mode and it will grab the highest number of a TODO tag... i prioritize notes like this: [todo27] > [todo5] > [todo1] > [todo] - so i always know what's more emergent!
 ```lisp
 (add-to-list 'load-path (expand-file-name "~/.emacs.d/lisp/"))
