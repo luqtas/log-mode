@@ -15,7 +15,7 @@ you can create block by pressing "l" in the log screen, after typing, if you sav
 
 you can set a custom folder for your machine, so you can sync stuff without worrying about conflicts in software like Syncthing!
 
-the logic for creating files when you press "l" or "e" (edits the current focused block (you can navigate onthem by TAB or SHIFT-TAB (backwards))) is: year% that has passed and your age (defined at clock.el). 100 files per year i think it's enough to not accumulate too much text in a file
+the logic for creating files when you press "l" or "e" (edits the current focused block (you can navigate on them by TAB or SHIFT-TAB (backwards))) is: year% that has passed and your age (defined at clock.el). 100 files per year i think it's enough to not accumulate too much text in a file
 
 opening a square bracket at org-mode will toggle the auto-completion. useful for adding existing tags without typing much!
 
