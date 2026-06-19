@@ -11,9 +11,9 @@ this is a block about [emacs]
 and this is another block about [cooking] <br>
        - since there's no blank lines between the last line, this belongs to the block! you can also add another tag here like [todo5]
 
-you can create block by pressing "l" in the log screen, after typing, if you save (will change this behavior to be exclusive to "e"), you'll return to the log screen and your blocks will be there! you can filter by AND by pressing "f" and typing stuff (RET auto-completes, pressing RET on a blank/filled tag does the search... commas will set new tags to be included), an OR search is done by "F" (SHIFT + f). adding new tags to the current search is about pressing M-f
+you can create block by pressing "l" in the log screen, after typing and saving, you can return to the log screen and your blocks will be there! you can filter by AND by pressing "f" and typing stuff (RET auto-completes, pressing RET on a blank/filled tag does the search... commas will set new tags to be included), an OR search is done by "F" (SHIFT + f). adding new tags to the current search is about pressing M-f
 
-you can set a custom folder for your machine, so you can sync stuff without worrying about conflicts in software like Syncthing!
+you can set a custom folder for your machine, so you can sync stuff without worrying about conflicts in software like Syncthing! and read states will also be shared among devices, free of conflict based when the read/un-read state was marked! status are updated by pressing "g" or when access the buffer once again
 
 the logic for creating files when you press "l" or "e" (edits the current focused block (you can navigate on them by TAB or SHIFT-TAB (backwards))) is: year% that has passed and your age (defined at clock.el). 100 files per year i think it's enough to not accumulate too much text in a file
 
