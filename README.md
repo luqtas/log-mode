@@ -6,7 +6,7 @@ i have no idea, ask Claude and Gemini
 
 set the directory folder on `M-x cus-g` (customize-group's shortcut) `log-mode` and other stuff to your taste and by entering the mode (with `M-x log`), you'll be asked to chose a tag to filter. tags are set from phrases/words between square brackets and separated by comma, e.g. [personal, todo, cooking], that's 3 tags... each paragraph is treated as a block you can read, un-read and sort by date!
 
-this is a block about [emacs]
+this is a block about [emacs] and [birds]
 
 and this is another block about [cooking] <br>
        - since there's no blank lines between the last line, this belongs to the block! you can also add another tag here like [todo5]
