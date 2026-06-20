@@ -10,7 +10,8 @@ set the directory folder on `M-x cus-g` (customize-group's shortcut) `log-mode` 
 this is a block about [emacs] and [birds]
 
 and this is another block about [cooking] <br>
-       - since there's no blank lines between the last line, this belongs to the block! you can also add another tag here like [todo5] or whatever
+       - since there's no blank lines between the last line, this belongs to the block!
+         you can also add another tag here like [todo5] or whatever
                 - this also belongs to the same block!
 ```
 
