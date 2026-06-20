@@ -62,6 +62,10 @@ pressin `C-c d` at the log-mode buffer will look for TODO tags and change them t
 &emsp; - rice [todo] (*cursor is here at log-mode and by pressing `C-c d` we get*)
 
 
-[supermarket, todo99]<br>
+[supermarket, todo99]<br> (*`C-c d` here*)
+&emsp; - beans [todo]<br>
+&emsp; - rice [done]
+
+[supermarket, done]<br>
 &emsp; - beans [todo]<br>
 &emsp; - rice [done]
