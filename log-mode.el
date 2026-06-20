@@ -1105,6 +1105,69 @@ please customise it first"))
             (get-buffer "*Log*"))
     (run-with-idle-timer 0.4 nil #'log-mode--full-refresh)))
 
+
+;; ---------------------------------------------------------------------------
+;; TASKS
+
+(defun log-mode-done ()
+  "Replace 'todo...' with 'done' within the paragraph at point.
+Prefers the todo on the same line as the cursor; falls back to the
+first todo found anywhere in the paragraph."
+  (interactive)
+  (let ((id (log-mode--para-at-point)))
+    (if (null id)
+        (message "No paragraph at point.")
+      ;; Before switching buffers, record which line within the rendered
+      ;; paragraph the cursor is on.  The paragraph marker sits just before
+      ;; the "  · " / "  ✓ " prefix (4 chars), so the actual text starts at
+      ;; marker-pos + 4.  count-lines gives 0 when point is still on that
+      ;; first line, 1 on the second, etc.
+      (let* ((cell (assoc id log-mode--para-markers))
+             (marker-pos (and cell (marker-position (cdr cell))))
+             (cursor-line-index
+              (if marker-pos
+                  (let ((text-start (+ marker-pos 4)))
+                    (if (>= (point) text-start)
+                        (count-lines text-start (point))
+                      0))
+                0)))
+        ;; Open the paragraph source file.
+        (log-mode-edit-paragraph)
+        ;; We are now in the source buffer.
+        (let* ((offset (when (string-match "::\\([0-9]+\\)$" id)
+                         (string-to-number (match-string 1 id))))
+               (start (save-excursion
+                        (goto-char offset)
+                        (beginning-of-line)
+                        (point)))
+               (end (save-excursion
+                      (goto-char offset)
+                      (if (re-search-forward "^[ \t]*$" nil t)
+                          (match-beginning 0)
+                        (point-max)))))
+          (save-restriction
+            (narrow-to-region start end)
+            (let (replaced)
+              ;; 1. Try the specific line the cursor was on.
+              (save-excursion
+                (goto-char (point-min))
+                (forward-line cursor-line-index)
+                (let ((line-end (line-end-position)))
+                  (when (re-search-forward "\\btodo[a-zA-Z0-9]*\\b" line-end t)
+                    (replace-match "done" nil t)
+                    (setq replaced t))))
+              ;; 2. Fall back to the first todo anywhere in the paragraph.
+              (unless replaced
+                (goto-char (point-min))
+                (if (re-search-forward "\\btodo[a-zA-Z0-9]*\\b" nil t)
+                    (progn
+                      (replace-match "done" nil t)
+                      (setq replaced t))
+                  (message "No todo found in this paragraph.")))
+              (when replaced
+                (save-buffer)
+                (message "Marked as done.")))))))))
+
 ;; ---------------------------------------------------------------------------
 ;; Mode definition & keymap
 
@@ -1123,6 +1186,7 @@ please customise it first"))
             nil t))
 
 (suppress-keymap log-mode-map)
+(define-key log-mode-map (kbd "C-c d")     #'log-mode-done)
 (define-key log-mode-map (kbd "n")         #'log-mode-next-page)
 (define-key log-mode-map (kbd "p")         #'log-mode-prev-page)
 (define-key log-mode-map (kbd "g")         #'log-mode--full-refresh)
