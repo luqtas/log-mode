@@ -55,7 +55,7 @@ this will starts Emacs on log-mode and it will set the initial filter to the hig
 (add-hook 'server-after-make-frame-hook #'log-open-top-todo)
 ```
 
-`C-c d` will look for TODO tags and change them to *done*, it's position-aware, e.g.
+pressin `C-c d` at the log-mode buffer will look for TODO tags and change them to *done*, it's position-aware, e.g.
 
 [supermarket, todo99]<br>
 &emsp; - beans [todo]<br>
