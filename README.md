@@ -55,26 +55,13 @@ this will starts Emacs on log-mode and it will set the initial filter to the hig
 (add-hook 'server-after-make-frame-hook #'log-open-top-todo)
 ```
 
-i do also have a (done), which will grab the TODO tag (with any number) and it'll change to *done*... doesn't matter where it's like [cooking, todo5] will turn into [cooking, done]! guess this conflicts or overlaps with the "read/un-read" function in log-mode, so i guess some UX tinker is needed - maybe we can have (done) inside log-mode too?
-```lisp
-(defun done ()
-  "Replace 'todo...' with 'done' on the current line, preserving cursor position."
-  (interactive)
-  (save-excursion
-    (let ((start (line-beginning-position))
-          (end   (line-end-position)))
-      (save-restriction
-        (narrow-to-region start end)
-        (goto-char (point-min))
-        (while (re-search-forward "\\btodo[a-zA-Z0-9]*\\b" nil t)
-            (replace-match "done" nil t)
-          (message "No todo found on this line."))))))
-(global-set-key (kbd "C-c d") 'done)
-```
-edit: we have `C-c d` implemented at log-mode but i gotta check if i can set it to modify the tag on the paragraph cursor is, e.g.
+`C-c d` will look for TODO tags and change them to *done*, it's position-aware, e.g.
 
-```
-whatever [supermarket, todo5]
-      - beans! [todo]
-```
-running the function will first (WILL EDIT THAT TOMORROW)
+[supermarket, todo99]<br>
+&emsp; - beans [todo]<br>
+&emsp; - rice [todo] (*cursor is here at log-mode and by pressing `C-c d` we get*)
+
+
+[supermarket, todo99]<br>
+&emsp; - beans [todo]<br>
+&emsp; - rice [done]
