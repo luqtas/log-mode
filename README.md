@@ -6,20 +6,23 @@ i have no idea, ask Claude and Gemini
 
 set the directory folder on `M-x cus-g` (customize-group's shortcut) `log-mode` and other stuff to your taste and by entering the mode (with `M-x log`), you'll be asked to chose a tag to filter. tags are set from phrases/words between square brackets and separated by comma, e.g. [personal, todo, cooking], that's 3 tags... each paragraph is treated as a block you can read, un-read and sort by date!
 
+```
 this is a block about [emacs] and [birds]
 
 and this is another block about [cooking] <br>
-       - since there's no blank lines between the last line, this belongs to the block! you can also add another tag here like [todo5]
+       - since there's no blank lines between the last line, this belongs to the block! you can also add another tag here like [todo5] or whatever
+                - this also belongs to the same block!
+```
 
-you can create a block by pressing "l" in the log screen, after typing and saving, you can return to the log screen and your blocks will be there! you can filter by AND by pressing "f" and typing stuff (RET auto-completes, pressing RET on a blank/filled tag does the search... commas will set new tags to be included), an OR search is done by "F" (SHIFT + f). adding new tags to the current search is about pressing M-f
+you can create a block by pressing "l" in the log screen, after typing and saving, you can return to the log screen and your blocks will be there (considering you didn't set any filter or what you typed has the filtered tag)! you can filter by an AND logic by pressing "f" (RET for confirming the auto-completion and RET again on a blank/filled tag will search... commas allows multiple tags search), an OR logic search is done by "F" (SHIFT + f). adding new tags to the current search is about pressing M-f
 
-by pressing "t" you can join multiple tags to be filtered (always) as one, e.g. [project] and [projects] unified at the "t" buffer like this: project, projects (each new line is a new definition of aliases), every time you filter "projects", tags with "project" also will be included! useful if you like to keep the typing clean by abiding to plural or whatever grammatik rules
+you can define aliases by pressing "t", there you can join multiple tags to be filtered (always) as one, e.g. [project], [prooojects], [things] and [projects] can be unified at the "t" buffer like this: `project, prooojects, things, projects` (each new line is a new definition of aliases), every time you filter one of those tags the others will also be included! useful if you like to keep the typing clean by abiding to plural or whatever grammatik rules
 
-you can set a custom/shared config. folder for your machine (at `customize-group`), so you can sync stuff without worrying about conflicts in software like Syncthing! logs, aliases and read states will be shared among devices, free of conflict. read/un-read state will have the date you toggled them and the last set is what'll define for all devices! if created a new block in another device sharing the same database or marked something as read, you can press "g" or access the buffer once again to get the updates
+you can set a custom/shared config. folder for your machine (at `customize-group`), so you can sync stuff without worrying about conflicts in software like Syncthing! logs, aliases and read states will be shared among devices, free of conflict. the read/un-read state will have the date you toggled it and the last set is what'll define for all devices!
 
-the logic for creating files when you press "l" or "e" (edits the current focused block (you can navigate on them by TAB or SHIFT-TAB (backwards))) is: year% that has passed and your age (defined at clock.el). 100 files per year i think it's enough to not accumulate too much text in a file
+if created a new block in another device sharing the same database or marked something as read, you can press "g" or access the buffer once again to get the updates
 
-keep in mind when pressing "e" to edit a block, by saving the file, you'll return to *log-mode* buffer
+the logic for creating files when you press "l" or "e" (edits the current focused block (you can navigate on them by TAB or SHIFT-TAB (backwards))) is: year% that has passed and your age (defined at clock.el). 100 files per year i think it's enough to not accumulate too much text in a file... when pressing "e" to edit a block, by saving the file, you'll return to *log-mode* buffer
 
 `log-tag-completion.el` will make square brackets at org-mode toggle the auto-completion. useful for adding existing tags without typing much!
 
@@ -32,10 +35,8 @@ this is what i have on my init.el!
 (setq log-mode-search-path '("~/storage/shared/cloud/logs"))
 ```
 
-i also have this on my init.el! <br>
-it starts Emacs on log-mode and it will set the initial filter to the highest number of a TODO tag... i prioritize notes like this: [todo27] > [todo5] > [todo1] > [todo] - so i always know what's more emergent!
+this will starts Emacs on log-mode and it will set the initial filter to the highest number of a TODO tag... i prioritize notes like this: [todo27] > [todo5] > [todo1] > [todo] - so i always know what's more emergent!
 ```lisp
-;; this ones starts log-mode at startup with our highest todoN tag as a filter
 (defun log-open-top-todo ()
   "Start log-mode filtered to the highest todoN tag found in the search path."
   (let* ((files  (log-mode--collect-files log-mode-search-path))
@@ -70,3 +71,10 @@ i do also have a (done), which will grab the TODO tag (with any number) and it'l
           (message "No todo found on this line."))))))
 (global-set-key (kbd "C-c d") 'done)
 ```
+edit: we have `C-c d` implemented at log-mode but i gotta check if i can set it to modify the tag on the paragraph cursor is, e.g.
+
+```
+whatever [supermarket, todo5]
+      - beans! [todo]
+```
+running the function will first (WILL EDIT THAT TOMORROW)
